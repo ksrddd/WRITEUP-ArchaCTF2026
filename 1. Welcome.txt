@@ -1,0 +1,128 @@
+#Welcome to the ArchaCTF 2026 (AES256)
+import base64
+import subprocess
+import sys
+
+KEY_B64 = (
+	"TVRFeE1EQXdNREFnTVRBeE1URXdNREFnTVRBeE1EQXdNREVnTVRFeE1EQXdNREFnTVRBeE1URXdNREVn"
+	"TVRBd01ERXdNREVnTVRFeE1EQXdNREFnTVRBeE1URXdNREFnTVRBeE1UQXdNVEE9"
+)
+
+FLAG_B64 = "5/ZgWtrN9cS08FwZF2aaxhBXsf4+2PvWvHRWSvdvdYg="
+
+
+def b64decode(s: str) -> bytes:
+	return base64.b64decode(s)
+
+
+def derive_key_from_double_b64(s64: str) -> bytes:
+	# First decode
+	a = b64decode(s64)
+	# If first decode is printable text that itself is base64, decode again
+	try:
+		a_text = a.decode("utf-8").strip()
+	except Exception:
+		return a
+
+	# If looks like base64, decode second time
+	if all(ch in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=\n" for ch in a_text):
+		b = b64decode(a_text)
+	else:
+		b = a
+
+	# If b is ASCII groups of 0/1 separated by spaces, convert to bytes
+	try:
+		b_text = b.decode("utf-8").strip()
+		parts = b_text.split()
+		if parts and all(set(p) <= set("01") for p in parts):
+			return bytes(int(p, 2) for p in parts)
+	except Exception:
+		pass
+
+	return b
+
+
+def ensure_key_len(key: bytes, size: int = 32) -> bytes:
+	if len(key) == size:
+		return key
+	if len(key) > size:
+		return key[:size]
+	return key.ljust(size, b"\0")
+
+
+def main():
+	key_material = derive_key_from_double_b64(KEY_B64)
+	print("Derived key bytes (hex):", key_material.hex())
+	print("Derived key length:", len(key_material))
+
+	key = ensure_key_len(key_material, 32)
+	print("Using AES key length:", len(key))
+
+	ct = b64decode(FLAG_B64)
+	print("Ciphertext (hex):", ct.hex())
+
+	# Try Crypto import and install if missing
+	try:
+		from Crypto.Cipher import AES
+		from Crypto.Util.Padding import unpad
+	except Exception:
+		print("PyCryptodome not found; attempting to install...")
+		subprocess.check_call([sys.executable, "-m", "pip", "install", "--user", "pycryptodome"])
+		from Crypto.Cipher import AES
+		from Crypto.Util.Padding import unpad
+
+	def decrypt_ecb(k: bytes, data: bytes) -> bytes:
+		c = AES.new(k, AES.MODE_ECB)
+		pt = c.decrypt(data)
+		try:
+			return unpad(pt, 16)
+		except Exception:
+			return pt
+
+	def decrypt_cbc(k: bytes, iv: bytes, data: bytes) -> bytes:
+		c = AES.new(k, AES.MODE_CBC, iv)
+		pt = c.decrypt(data)
+		try:
+			return unpad(pt, 16)
+		except Exception:
+			return pt
+
+	# Try ECB
+	print("\nTrying AES-ECB...")
+	try:
+		pt = decrypt_ecb(key, ct)
+		try:
+			print("ECB plaintext:", pt.decode("utf-8"))
+		except Exception:
+			print("ECB plaintext (hex):", pt.hex())
+	except Exception as e:
+		print("ECB failed:", e)
+
+	# Try CBC with zero IV
+	print("\nTrying AES-CBC with zero IV...")
+	try:
+		pt = decrypt_cbc(key, b"\x00" * 16, ct)
+		try:
+			print("CBC(zeros) plaintext:", pt.decode("utf-8"))
+		except Exception:
+			print("CBC(zeros) plaintext (hex):", pt.hex())
+	except Exception as e:
+		print("CBC(zeros) failed:", e)
+
+	# Try CBC with IV = first block (when ciphertext is IV+ct)
+	if len(ct) > 16:
+		iv = ct[:16]
+		rest = ct[16:]
+		print("\nTrying AES-CBC with IV = first block (prepended IV)...")
+		try:
+			pt = decrypt_cbc(key, iv, rest)
+			try:
+				print("CBC(prepended) plaintext:", pt.decode("utf-8"))
+			except Exception:
+				print("CBC(prepended) plaintext (hex):", pt.hex())
+		except Exception as e:
+			print("CBC(prepended) failed:", e)
+
+
+if __name__ == "__main__":
+	main()
